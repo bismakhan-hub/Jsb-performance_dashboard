@@ -3,19 +3,18 @@ import pandas as pd
 import plotly.express as px
 import os
 
-# --- CONFIG & SECRETS ---
+# --- FILE PATHS ---
 DATA_FILE = "executive_memory.csv"
 GRADING_FILE = "grading_data.csv"
 
-try:
-    ADMIN_PWD = st.secrets["ADMIN_PASSWORD"]
-    TL_PWD = st.secrets.get("TL_PASSWORD", "tl123")
-    HEAD_AML_PWD = st.secrets.get("HEAD_AML_PASSWORD", "head123")
-    HEAD_CFT_PWD = st.secrets.get("HEAD_CFT_PASSWORD", "cft123")
-except:
-    ADMIN_PWD, TL_PWD, HEAD_AML_PWD, HEAD_CFT_PWD = "admin_access_123", "tl123", "head123", "cft123"
+# --- ALL PASSWORDS CONFIG ---
+# Set these in your Streamlit Advanced Settings > Secrets
+ADMIN_PWD = st.secrets.get("ADMIN_PASSWORD", "admin_123")
+TL_PWD = st.secrets.get("TL_PASSWORD", "tl_pass_456")
+HEAD_AML_PWD = st.secrets.get("HEAD_AML_PASSWORD", "aml_head_789")
+HEAD_CFT_PWD = st.secrets.get("HEAD_CFT_PASSWORD", "cft_head_000")
 
-st.set_page_config(page_title="JSB Trade Audit", layout="wide")
+st.set_page_config(page_title="Performance Dashboard", layout="wide")
 
 # --- HIERARCHY DATA ---
 HIERARCHY = {
@@ -24,107 +23,110 @@ HIERARCHY = {
     "HASSAN.WASEEM": ["FABIHA.IRSHAD", "RIZA.ALI", "A.ASLAM", "MUHAMMAD.AHMER"],
     "REHAN.SYED": ["SHABBIR.SHAH", "AREEB.ALI", "WAQAR.AHMAD20374", "AMRA.SIDDIQUI"]
 }
-TEAM_LEADS = list(HIERARCHY.keys())
 GRADE_POINTS = {"1": 30, "2": 25, "3": 20, "4": 15}
 
-# --- HELPER FUNCTIONS ---
-def load_data(file):
-    return pd.read_csv(file) if os.path.exists(file) else None
+# --- 70% CALCULATION LOGIC ---
+def calculate_system_score(row):
+    owner = str(row.get('OWNER ID', '')).strip()
+    # Targets for 70% achievement
+    if owner == "AMRA.SIDDIQUI":
+        t_cases, t_strs, t_pri = 200, 6, 20 
+    else:
+        t_cases, t_strs, t_pri = 40, 2, 10
 
-def save_data(df, file):
-    df.to_csv(file, index=False)
+    # Actuals
+    a_cases = row.get('SEND RFI', 0) + row.get('RECOMMEND CLOSE WITHOUT SAR', 0) + row.get('RECOMMEND CLOSE AND GENERATE SAR', 0)
+    a_strs = row.get('STR', 0)
+    a_pri = row.get('PRI STR', 0)
+
+    # Capped Achievement Ratios
+    case_perf = min(a_cases / t_cases, 1.0) if t_cases > 0 else 0
+    str_perf = min(a_strs / t_strs, 1.0) if t_strs > 0 else 0
+    pri_perf = min(a_pri / t_pri, 1.0) if t_pri > 0 else 0
+
+    return max(case_perf, str_perf, pri_perf) * 70
 
 # --- SIDEBAR LOGIN ---
 with st.sidebar:
-    st.header("🔐 Secure Access")
+    st.header("🔐 Access Control")
     role = st.radio("Select Role", ["Viewer", "Admin", "Team Lead", "Head AML", "Head AML/CFT"])
-    pwd = st.text_input("Password", type="password")
+    pwd = st.text_input("Enter Password", type="password")
 
-# --- ADMIN: FILE UPLOAD ---
+# --- 1. ADMIN PORTAL: FILE UPLOAD & YEAR SELECTION ---
 if role == "Admin" and pwd == ADMIN_PWD:
-    st.subheader("Admin: Data Management")
-    m = st.selectbox("Month", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
-    y = st.selectbox("Year", [2024, 2025, 2026])
-    month_label = f"{m} {y}"
+    st.subheader("🛠️ Admin: Publish Performance Data")
     
-    perf_file = st.file_uploader("Activity Report", type=["xls", "xlsx"])
-    str_file = st.file_uploader("STR List", type=["xls", "xlsx"])
+    # Selection Controls
+    col1, col2 = st.columns(2)
+    with col1:
+        month = st.selectbox("Select Month", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+    with col2:
+        year = st.selectbox("Select Year", [2024, 2025, 2026])
+    
+    # File Uploaders
+    st.markdown("---")
+    perf_file = st.file_uploader("Upload Activity Report (Excel)", type=["xls", "xlsx"])
+    str_file = st.file_uploader("Upload STR List (Excel)", type=["xls", "xlsx"])
 
     if perf_file and str_file:
-        # Note: 'xlrd' and 'openpyxl' must be in requirements.txt
-        df_perf = pd.read_excel(perf_file, header=2).fillna(0)
-        df_str = pd.read_excel(str_file).fillna(0)
-        
-        # Logic: AMRA.SIDDIQUI 5:1 Ratio
-        def adjust_vol(row):
-            vol = row['Maker_Vol']
-            if row['OWNER ID'] == "AMRA.SIDDIQUI":
-                return vol / 5
-            return vol
+        if st.button("🚀 Calculate & Publish Dashboard"):
+            try:
+                # Process Excel Files
+                df_p = pd.read_excel(perf_file, header=2).fillna(0)
+                df_s = pd.read_excel(str_file).fillna(0)
+                df_p.columns = df_p.columns.str.strip()
+                
+                # Merge Data
+                master = pd.merge(df_p, df_s, left_on='OWNER ID', right_on=df_s.columns[0], how='left').fillna(0)
+                
+                # Apply 70% Calculation Engine
+                master['Case_Points'] = master.apply(calculate_system_score, axis=1)
+                master['Final_Score'] = master['Case_Points'] # Initial value before TL Grading
+                master['Report_Month'] = f"{month} {year}"
+                
+                # Save to memory to prevent KeyErrors
+                master.to_csv(DATA_FILE, index=False)
+                st.success(f"Successfully published data for {month} {year}!")
+            except Exception as e:
+                st.error(f"Error processing files: {e}")
 
-        # Standard Processing
-        df_perf.columns = df_perf.columns.str.strip()
-        maker_cols = ['SEND RFI', 'RECOMMEND CLOSE WITHOUT SAR', 'RECOMMEND CLOSE AND GENERATE SAR']
-        df_perf['Maker_Vol'] = df_perf[[c for c in maker_cols if c in df_perf.columns]].sum(axis=1)
-        df_perf['Adjusted_Vol'] = df_perf.apply(adjust_vol, axis=1)
-        
-        # Merge STRs
-        master = pd.merge(df_perf, df_str, left_on='OWNER ID', right_on=df_str.columns[0], how='left').fillna(0)
-        
-        # Case Points (70% Weighting)
-        master['Case_Points'] = (master['Adjusted_Vol'] + (master.get('STR', 0) * 20) + (master.get('PRI STR', 0) * 4)) * 0.7
-        master['Report_Month'] = month_label
-        
-        if st.button("🚀 Publish Raw Data"):
-            save_data(master, DATA_FILE)
-            st.success("Data Published!")
-
-# --- TEAM LEAD: GRADING ---
+# --- 2. TEAM LEAD PORTAL: GRADING ---
 elif role == "Team Lead" and pwd == TL_PWD:
-    tl_name = st.selectbox("Identify Yourself", TEAM_LEADS)
+    tl_name = st.selectbox("Select Your Name", list(HIERARCHY.keys()))
+    st.subheader(f"Grading Portal: {tl_name}")
+    
     analysts = HIERARCHY[tl_name]
-    st.subheader(f"Grading for Team: {tl_name}")
-    
-    gradings = load_data(GRADING_FILE) or pd.DataFrame(columns=["Name", "Grade", "Points", "Status"])
-    
+    new_grades = []
     for a in analysts:
-        col1, col2 = st.columns(2)
-        with col1: st.write(a)
-        with col2: grade = st.selectbox(f"Grade {a}", ["1", "2", "3", "4"], key=a)
-        # Update logic here to save gradings
+        g = st.selectbox(f"Grade for {a}", ["1", "2", "3", "4"], key=a)
+        new_grades.append({"Analyst": a, "Grade": g, "Points": GRADE_POINTS[g], "Status": "Pending Head AML"})
     
     if st.button("Submit Gradings"):
-        st.info("Gradings submitted for Head AML review.")
+        pd.DataFrame(new_grades).to_csv(GRADING_FILE, index=False)
+        st.success("Gradings submitted for approval.")
 
-# --- HEAD AML: REVIEW & TL GRADING ---
-elif role == "Head AML" and pwd == HEAD_AML_PWD:
-    st.subheader("Head AML: Review Analyst Grades & Grade Team Leads")
-    # Show Pending Analyst Grades
-    # Option to Grade the 4 Team Leads
-    st.write("Reviewing TLs: " + ", ".join(TEAM_LEADS))
+# --- 3. HEAD AML / HEAD AML/CFT: APPROVAL ---
+elif role in ["Head AML", "Head AML/CFT"] and pwd in [HEAD_AML_PWD, HEAD_CFT_PWD]:
+    st.subheader(f"{role}: Review & Final Endorsement")
+    if os.path.exists(GRADING_FILE):
+        grades = pd.read_csv(GRADING_FILE)
+        st.dataframe(grades)
+        if st.button("Endorse All & Update Dashboard"):
+            data = pd.read_csv(DATA_FILE)
+            for _, row in grades.iterrows():
+                data.loc[data['OWNER ID'] == row['Analyst'], 'Final_Score'] = data['Case_Points'] + row['Points']
+            data.to_csv(DATA_FILE, index=False)
+            st.success("Final Scores published to Dashboard!")
+    else:
+        st.info("No pending gradings found.")
 
-# --- HEAD AML/CFT: FINAL ENDORSEMENT ---
-elif role == "Head AML/CFT" and pwd == HEAD_CFT_PWD:
-    st.subheader("Head AML/CFT: Final Approval")
-    st.warning("Pending Approval: Final Performance Scores")
-
-# --- DASHBOARD VIEW ---
-raw_data = load_data(DATA_FILE)
-if raw_data is not None:
+# --- 4. DASHBOARD VIEW (VIEWER ROLE) ---
+if os.path.exists(DATA_FILE):
+    data = pd.read_csv(DATA_FILE).sort_values("Final_Score", ascending=False).reset_index(drop=True)
     st.title("🏆 Performance Excellence Board")
+    st.markdown(f"<h3 style='text-align: center;'>{data['Report_Month'].iloc[0]}</h3>", unsafe_allow_html=True)
     
-    # Calculate Final Score (Case Points + Grading Points)
-    # For now, showing based on Case Points until gradings approved
-    top_5 = raw_data.nlargest(5, 'Case_Points')
-    
-    # Podium (Visual Representation)
-    st.markdown(f"""
-    <div style="display: flex; justify-content: center; align-items: flex-end; gap: 20px;">
-        <div style="text-align: center;">🥈<br><div style="background:#e5e4e2; padding:20px; border-radius:10px;">{top_5.iloc[1]['OWNER ID']}</div></div>
-        <div style="text-align: center;">🥇<br><div style="background:#ffd700; padding:40px; border-radius:10px;">{top_5.iloc[0]['OWNER ID']}</div></div>
-        <div style="text-align: center;">🥉<br><div style="background:#cd7f32; padding:15px; border-radius:10px;">{top_5.iloc[2]['OWNER ID']}</div></div>
-    </div>
-    """, unsafe_allow_html=True)
-
+    # Rankings Display
+    st.dataframe(data[['OWNER ID', 'Final_Score']], use_container_width=True, hide_index=True)
 else:
-    st.info("Dashboard waiting for Admin data upload.")
+    st.warning("⚠️ No data published yet. Admin must upload files.")
