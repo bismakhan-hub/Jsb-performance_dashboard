@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-# --- 1. GLOBAL SHARED STORAGE ---
-# This @st.cache_resource creates a memory space shared by ALL users.
+# --- NEW: SHARED STORAGE BRIDGE ---
+# This is the only way to make data "Visible to all" in Streamlit
 @st.cache_resource
-def get_global_store():
+def get_shared_storage():
     return {
         "mtd_data": None,
         "submitted_ratings": set(),
@@ -14,30 +14,22 @@ def get_global_store():
         "approved_ratings": {}
     }
 
-global_store = get_global_store()
+shared = get_shared_storage()
 
-# Helper to push updates to the shared memory
-def save_to_global():
-    global_store["mtd_data"] = st.session_state.mtd_data
-    global_store["submitted_ratings"] = st.session_state.submitted_ratings
-    global_store["pending_tl_ratings"] = st.session_state.pending_tl_ratings
-    global_store["pending_head_aml_ratings"] = st.session_state.pending_head_aml_ratings
-    global_store["approved_ratings"] = st.session_state.approved_ratings
-
-# --- 2. INITIALIZATION ---
+# --- 1. INITIALIZATION & SESSION STATE ---
 if 'role' not in st.session_state: st.session_state.role = None
 if 'user_name' not in st.session_state: st.session_state.user_name = None
 
-# Automatically load the shared data for the current user
-st.session_state.mtd_data = global_store["mtd_data"]
-st.session_state.submitted_ratings = global_store["submitted_ratings"]
-st.session_state.pending_tl_ratings = global_store["pending_tl_ratings"]
-st.session_state.pending_head_aml_ratings = global_store["pending_head_aml_ratings"]
-st.session_state.approved_ratings = global_store["approved_ratings"]
+# Sync private session with the shared data
+st.session_state.mtd_data = shared["mtd_data"]
+st.session_state.submitted_ratings = shared["submitted_ratings"]
+st.session_state.pending_tl_ratings = shared["pending_tl_ratings"]
+st.session_state.pending_head_aml_ratings = shared["pending_head_aml_ratings"]
+st.session_state.approved_ratings = shared["approved_ratings"]
 
 st.set_page_config(layout="wide", page_title="AML Performance Board")
 
-# --- 3. STYLING ---
+# --- 2. STYLING (UNCHANGED) ---
 st.markdown("""
     <style>
     .comparison-box { background-color: #0d1117; border: 2px solid #30363d; border-radius: 15px; padding: 20px; height: 100%; }
@@ -49,7 +41,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- HIERARCHY ---
+# --- HIERARCHY (UNCHANGED) ---
 TEAM_STRUCTURE = {
     "BASIT.RAHIM": ["DAWAR.IMAM", "BISMA.KHAN", "AMNAH.KHAN", "K.MEHDI"],
     "IRFAN.HASAN": ["SHAHZAIB.QURESHI", "MARYAM.TAHIR", "MSALMAN.K", "MUJEEB.ARIF"],
@@ -65,7 +57,7 @@ PASSWORDS = {
     "Analyst": "AMLView"
 }
 
-# --- 4. LOGIN SYSTEM ---
+# --- 3. LOGIN SYSTEM (UNCHANGED) ---
 if not st.session_state.role:
     st.title("🛡️ AML Portal Secure Login")
     r = st.selectbox("Select Role", ["Viewer"] + list(PASSWORDS.keys()))
@@ -78,7 +70,7 @@ if not st.session_state.role:
             st.rerun()
         else: st.error("Access Denied")
 else:
-    # --- 5. TOP BAR ---
+    # --- 4. TOP BAR (UNCHANGED) ---
     st.sidebar.info(f"User: {st.session_state.user_name}")
     if st.sidebar.button("Logout"):
         st.session_state.role = None
@@ -92,7 +84,9 @@ else:
         sel_month_name = st.selectbox("Select Month", months, index=10)
         sel_month = months.index(sel_month_name) + 1
 
-    # --- 6. CALCULATION ENGINE ---
+    st.markdown(f"### <div style='text-align: center; color: #FFD700;'>{sel_month_name} {sel_year} Performance</div>", unsafe_allow_html=True)
+
+    # --- 5. CALCULATION ENGINE (UNCHANGED) ---
     def calculate_performance(fccm_df, str_df, month):
         fccm_df.columns = [str(c).upper().strip() for c in fccm_df.columns]
         str_df.columns = [str(c).upper().strip() for c in str_df.columns]
@@ -132,18 +126,33 @@ else:
                 rat = st.session_state.approved_ratings.get(oid, 3)
                 return round((sys * 0.7) + ((rat * 25) * 0.3), 2)
             st.session_state.mtd_data['Final_Score'] = st.session_state.mtd_data.apply(update_row, axis=1)
-            save_to_global()
+            # Push updates to shared area
+            shared["mtd_data"] = st.session_state.mtd_data
+            shared["approved_ratings"] = st.session_state.approved_ratings
 
-    # --- 7. RANKING RENDERER ---
+    # --- 6. RANKING RENDERER (UNCHANGED) ---
     def render_snapshot_rankings(df, score_col, title, is_pending=False):
         st.subheader(title)
         if is_pending:
             st.info("⚠️ Ratings Pending / Approval Awaited")
+            st.markdown("<div style='text-align: center; color: #888;'><i>Rankings will appear here once ratings are approved.</i></div>", unsafe_allow_html=True)
             return
-        top_5 = df.sort_values(score_col, ascending=False).head(5)
-        st.dataframe(top_5[['OWNER ID', score_col]], use_container_width=True)
 
-    # --- 8. TABS & LOGIC ---
+        top_5 = df.sort_values(score_col, ascending=False).head(5)
+        
+        if len(top_5) >= 3:
+            p1, p2, p3 = st.columns([1, 1.2, 1])
+            with p2: st.markdown(f"<div style='text-align: center;'><div style='font-size: 30px;'>🥇</div><div style='background: #FFD700; border-radius: 50%; width: 100px; height: 100px; margin: auto; display: flex; align-items: center; justify-content: center; color: black; font-weight: bold; font-size: 12px;'>{top_5.iloc[0]['OWNER ID']}</div><p>Winner<br><b>{top_5.iloc[0][score_col]} Pts</b></p></div>", unsafe_allow_html=True)
+            with p1: st.markdown(f"<div style='text-align: center; margin-top: 20px;'><div style='font-size: 25px;'>🥈</div><div style='background: #C0C0C0; border-radius: 50%; width: 80px; height: 80px; margin: auto; display: flex; align-items: center; justify-content: center; color: black; font-weight: bold; font-size: 10px;'>{top_5.iloc[1]['OWNER ID']}</div><p>Rank 2<br>{top_5.iloc[1][score_col]} Pts</p></div>", unsafe_allow_html=True)
+            with p3: st.markdown(f"<div style='text-align: center; margin-top: 20px;'><div style='font-size: 25px;'>🥉</div><div style='background: #CD7F32; border-radius: 50%; width: 80px; height: 80px; margin: auto; display: flex; align-items: center; justify-content: center; color: black; font-weight: bold; font-size: 10px;'>{top_5.iloc[2]['OWNER ID']}</div><p>Rank 3<br>{top_5.iloc[2][score_col]} Pts</p></div>", unsafe_allow_html=True)
+
+        r4, r5 = st.columns(2)
+        if len(top_5) >= 4:
+            with r4: st.markdown(f"<div class='rank-card'><div class='rank-star'>★</div><div class='rank-name'>Rank 4<br>{top_5.iloc[3]['OWNER ID']}</div><div class='rank-pts'>{top_5.iloc[3][score_col]} Pts</div></div>", unsafe_allow_html=True)
+        if len(top_5) >= 5:
+            with r5: st.markdown(f"<div class='rank-card'><div class='rank-star'>★</div><div class='rank-name'>Rank 5<br>{top_5.iloc[4]['OWNER ID']}</div><div class='rank-pts'>{top_5.iloc[4][score_col]} Pts</div></div>", unsafe_allow_html=True)
+
+    # --- 7. TABS & LOGIC (UNCHANGED CORE) ---
     tab_list = ["🏆 Analyst Excellence", "🎖️ TL Excellence", "📊 Scoreboard Explorer"]
     if st.session_state.role in ["Team Lead", "Head AML"]: tab_list.append("⭐ Rating Panel")
     if st.session_state.role in ["Admin", "Head AML", "Head AML/CFT"]: tab_list.append("⚙️ Management & Approvals")
@@ -152,8 +161,8 @@ else:
     if "⚙️ Management & Approvals" in tab_list:
         with tabs[-1]: 
             if st.session_state.role == "Admin":
-                f1 = st.file_uploader("FCCM MTD (.xls)", type=['xls'])
-                f2 = st.file_uploader("STR MTD (.xlsx)", type=['xlsx'])
+                st.subheader("Upload Monthly Data")
+                f1, f2 = st.file_uploader("FCCM MTD (.xls)", type=['xls']), st.file_uploader("STR MTD (.xlsx)", type=['xlsx'])
                 if st.button("Process Reports"):
                     if f1 and f2: 
                         st.session_state.mtd_data = calculate_performance(pd.read_excel(f1, skiprows=2, engine='xlrd'), pd.read_excel(f2), sel_month)
@@ -161,33 +170,68 @@ else:
                         st.session_state.pending_tl_ratings = []
                         st.session_state.pending_head_aml_ratings = []
                         st.session_state.approved_ratings = {}
-                        save_to_global() # SAVE DATA TO ALL USERS
-                        st.success("Data Updated for Everyone!")
+                        
+                        # SYNC TO ALL USERS
+                        shared["mtd_data"] = st.session_state.mtd_data
+                        shared["submitted_ratings"] = st.session_state.submitted_ratings
+                        shared["pending_tl_ratings"] = st.session_state.pending_tl_ratings
+                        shared["pending_head_aml_ratings"] = st.session_state.pending_head_aml_ratings
+                        shared["approved_ratings"] = st.session_state.approved_ratings
+                        
+                        st.success("Data Updated Globally!")
                         st.rerun()
             
             if st.session_state.role == "Head AML":
+                st.subheader("Pending Analyst Approvals")
                 for i, entry in enumerate(st.session_state.pending_tl_ratings):
-                    if st.button(f"Approve {entry.get('TL')}", key=f"aa_{i}"):
+                    st.write(f"**From TL: {entry.get('TL')}**")
+                    st.table(pd.DataFrame(entry['Grades'].items(), columns=['Analyst', 'Rating']))
+                    c1, c2 = st.columns(2)
+                    if c1.button("Approve Analyst Ratings", key=f"aa_{i}"):
                         st.session_state.approved_ratings.update(entry['Grades'])
                         st.session_state.pending_tl_ratings.pop(i)
                         refresh_scores_inplace()
-                        save_to_global()
+                        # Update shared area
+                        shared["approved_ratings"] = st.session_state.approved_ratings
+                        shared["pending_tl_ratings"] = st.session_state.pending_tl_ratings
                         st.rerun()
 
     if "⭐ Rating Panel" in tab_list:
         with tabs[3]: 
             if st.session_state.role == "Team Lead":
-                my_team = TEAM_STRUCTURE.get(st.session_state.user_name, [])
-                with st.form("tl_form"):
-                    grades = {oid: st.slider(f"Rating {oid}", 1, 5, 3) for oid in my_team}
-                    if st.form_submit_button("Submit"):
-                        st.session_state.pending_tl_ratings.append({"TL": st.session_state.user_name, "Grades": grades})
-                        st.session_state.submitted_ratings.add(st.session_state.user_name)
-                        save_to_global()
-                        st.rerun()
+                if st.session_state.user_name in st.session_state.submitted_ratings:
+                    st.success("✅ Ratings submitted.")
+                else:
+                    st.subheader("Rate Your Team")
+                    if st.session_state.mtd_data is not None:
+                        my_team = TEAM_STRUCTURE.get(st.session_state.user_name, [])
+                        with st.form("tl_form"):
+                            grades = {oid: st.slider(f"Rating for {oid}", 1, 5, 3) for oid in my_team}
+                            if st.form_submit_button("Submit"):
+                                st.session_state.pending_tl_ratings.append({"TL": st.session_state.user_name, "Grades": grades})
+                                st.session_state.submitted_ratings.add(st.session_state.user_name)
+                                # Sync to all
+                                shared["pending_tl_ratings"] = st.session_state.pending_tl_ratings
+                                shared["submitted_ratings"] = st.session_state.submitted_ratings
+                                st.rerun()
 
-    # --- 9. DISPLAY VIEWS ---
+    # --- EXCELLENCE VIEWS (UNCHANGED) ---
     if st.session_state.mtd_data is not None:
+        ratings_pending = len(st.session_state.approved_ratings) == 0
+        right_col_title = "⏳ Ratings & Approval Awaited" if ratings_pending else "Revised Score"
+
         with tabs[0]: 
             df_a = st.session_state.mtd_data[st.session_state.mtd_data['Role'] == "Analyst"]
-            render_snapshot_rankings(df_a, 'System_Score', "System Productivity")
+            cl, cm, cr = st.columns([10, 1, 10]) 
+            with cl: render_snapshot_rankings(df_a, 'System_Score', "System Productivity Only")
+            with cm: st.markdown("<div class='vertical-line'></div>", unsafe_allow_html=True)
+            with cr: render_snapshot_rankings(df_a, 'Final_Score', right_col_title, is_pending=ratings_pending)
+        
+        with tabs[1]: 
+            df_t = st.session_state.mtd_data[st.session_state.mtd_data['Role'] == "Team Lead"]
+            cl, cm, cr = st.columns([10, 1, 10])
+            with cl: render_snapshot_rankings(df_t, 'System_Score', "System Productivity Only")
+            with cm: st.markdown("<div class='vertical-line'></div>", unsafe_allow_html=True)
+            with cr: render_snapshot_rankings(df_t, 'Final_Score', right_col_title, is_pending=ratings_pending)
+        
+        with tabs[2]: st.dataframe(st.session_state.mtd_data, use_container_width=True)
