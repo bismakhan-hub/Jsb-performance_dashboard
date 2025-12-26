@@ -1,151 +1,217 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import os
 from datetime import datetime
 
-# --- SETTINGS & STORAGE ---
-DATA_FILE = "executive_memory.csv"
+# --- 1. INITIALIZATION & SESSION STATE ---
+if 'role' not in st.session_state: st.session_state.role = None
+if 'user_name' not in st.session_state: st.session_state.user_name = None
+if 'mtd_data' not in st.session_state: st.session_state.mtd_data = None
+if 'submitted_ratings' not in st.session_state: st.session_state.submitted_ratings = set()
+if 'pending_analyst_ratings' not in st.session_state: st.session_state.pending_analyst_ratings = []
+if 'pending_tl_ratings' not in st.session_state: st.session_state.pending_tl_ratings = []
+if 'approved_ratings' not in st.session_state: st.session_state.approved_ratings = {}
 
-# FIXED: This now looks at your Streamlit "Secrets" vault
-# Make sure you have ADMIN_PASSWORD = "admin_access_123" saved in your App Settings!
-try:
-    ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-except:
-    ADMIN_PASSWORD = "admin_access_123" # Fallback for local testing
+st.set_page_config(layout="wide", page_title="AML Performance Board")
 
-st.set_page_config(page_title="Performance Dashboard", layout="wide")
+# --- 2. STYLING ---
+st.markdown("""
+    <style>
+    .comparison-box { background-color: #0d1117; border: 2px solid #30363d; border-radius: 15px; padding: 20px; height: 100%; }
+    .vertical-line { border-left: 2px dashed #444; height: 550px; margin: 0 auto; }
+    .rank-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 15px; text-align: center; color: white; margin: 5px; }
+    .rank-star { color: #FFD700; font-size: 20px; }
+    .rank-name { font-weight: bold; font-size: 16px; margin-top: 5px; }
+    .rank-pts { color: #4CAF50; font-weight: bold; font-size: 14px; }
+    </style>
+""", unsafe_allow_html=True)
 
-def save_data(df, month_label):
-    df['Report_Month'] = month_label
-    df.to_csv(DATA_FILE, index=False)
+# --- HIERARCHY ---
+TEAM_STRUCTURE = {
+    "BASIT.RAHIM": ["DAWAR.IMAM", "BISMA.KHAN", "AMNAH.KHAN", "K.MEHDI"],
+    "IRFAN.HASAN": ["SHAHZAIB.QURESHI", "MARYAM.TAHIR", "MSALMAN.K", "MUJEEB.ARIF"],
+    "HASSAN.WASEEM": ["FABIHA.IRSHAD", "RIZA.ALI", "A.ASLAM", "MUHAMMAD.AHMER", "RIMSHA.IQBAL"],
+    "REHAN.SYED": ["SHABBIR.SHAH", "AREEB.ALI", "WAQAR.AHMAD20374", "AMRA.SIDDIQUI"]
+}
 
-def load_data():
-    if os.path.exists(DATA_FILE):
-        return pd.read_csv(DATA_FILE)
-    return None
+# --- PASSWORDS (ADMIN HIDDEN IN SECRETS) ---
+PASSWORDS = {
+    "Admin": st.secrets.get("ADMIN_PASSWORD", "LocalDevPass123"), # Pulls from public Streamlit Secrets
+    "Head AML/CFT": "CFT@Head2025",
+    "Head AML": "HeadAML!123", 
+    "Team Lead": "TL@AML2025", 
+    "Analyst": "AMLView"
+}
 
-# --- SIDEBAR: ADMIN CONTROLS ---
-with st.sidebar:
-    st.header("🔐 Admin Access")
-    pwd = st.text_input("Password", type="password")
+# --- 3. LOGIN SYSTEM ---
+if not st.session_state.role:
+    st.title("🛡️ AML Portal Secure Login")
+    r = st.selectbox("Select Role", ["Viewer"] + list(PASSWORDS.keys()))
+    selected_name = st.selectbox("Select Your Name", list(TEAM_STRUCTURE.keys())) if r == "Team Lead" else r
+    p = st.text_input("Password", type="password") if r != "Viewer" else ""
     
-    # Initialize these as None so the app doesn't crash
-    perf_file, str_file, month_label = None, None, ""
-    
-    if pwd == ADMIN_PASSWORD:
-        st.success("Access Granted")
-        
-        # Month Picker
-        m = st.selectbox("Month", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
-        y = st.selectbox("Year", [2024, 2025, 2026])
-        month_label = f"{m} {y}"
-        
-        perf_file = st.file_uploader("Upload Activity Report", type=["xls", "xlsx"])
-        str_file = st.file_uploader("Upload STR List", type=["xls", "xlsx"])
-        
-        if st.button("🗑️ Wipe Dashboard"):
-            if os.path.exists(DATA_FILE): 
-                os.remove(DATA_FILE)
+    if st.button("Login"):
+        if r == "Viewer" or p == PASSWORDS[r]:
+            st.session_state.role, st.session_state.user_name = r, selected_name
             st.rerun()
+        else: st.error("Access Denied")
+else:
+    # --- 4. TOP BAR ---
+    st.sidebar.info(f"User: {st.session_state.user_name}")
+    if st.sidebar.button("Logout"):
+        st.session_state.role = None
+        st.rerun()
 
-# --- DATA ENGINE ---
-# This part only runs if the Admin is logged in and files are uploaded
-if perf_file and str_file:
-    try:
-        df_perf = pd.read_excel(perf_file, header=2).fillna(0)
-        df_str = pd.read_excel(str_file).fillna(0)
-        
-        df_perf.columns = df_perf.columns.str.strip()
-        df_str.columns = df_str.columns.str.strip()
-        
-        maker_cols = ['SEND RFI', 'RECOMMEND CLOSE WITHOUT SAR', 'RECOMMEND CLOSE AND GENERATE SAR']
-        checker_cols = ['CLOSE WITHOUT SAR', 'CLOSE AND GENERATE SAR', 'LINK AND CLOSE AS MERGE']
-        
-        # Calculate Scores
-        df_perf['Maker_Vol'] = df_perf[[c for c in maker_cols if c in df_perf.columns]].sum(axis=1)
-        df_perf['Checker_Vol'] = df_perf[[c for c in checker_cols if c in df_perf.columns]].sum(axis=1)
-        
-        str_key = 'Team Member' if 'Team Member' in df_str.columns else df_str.columns[0]
-        master = pd.merge(df_perf, df_str, left_on='OWNER ID', right_on=str_key, how='left').fillna(0)
-        
-        # Formula: Maker + Checker + (STR * 20) + (PRI STR * 4)
-        master['Total_Score'] = master['Maker_Vol'] + master['Checker_Vol'] + (master.get('STR', 0) * 20) + (master.get('PRI STR', 0) * 4)
+    st.title("🏆 Performance Excellence Board")
+    c1, c2 = st.columns(2)
+    with c1: sel_year = st.selectbox("Select Year", [2024, 2025], index=1)
+    with c2:
+        months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+        sel_month_name = st.selectbox("Select Month", months, index=10)
+        sel_month = months.index(sel_month_name) + 1
 
-        if st.button(f"🚀 Publish {month_label}"):
-            save_data(master, month_label)
-            st.success("Dashboard Updated!")
-            st.rerun()
-    except Exception as e:
-        st.error(f"Error processing files: {e}")
+    st.markdown(f"### <div style='text-align: center; color: #FFD700;'>{sel_month_name} {sel_year} Performance</div>", unsafe_allow_html=True)
 
-# --- THE VIEW ---
-data = load_data()
+    # --- 5. CALCULATION ENGINE ---
+    def calculate_performance(fccm_df, str_df, month):
+        fccm_df.columns = [str(c).upper().strip() for c in fccm_df.columns]
+        str_df.columns = [str(c).upper().strip() for c in str_df.columns]
+        df = pd.merge(fccm_df, str_df.rename(columns={"TEAM MEMBER": "OWNER ID"}), on="OWNER ID", how="outer").fillna(0)
+        
+        amra_row = df[df['OWNER ID'].str.contains("AMRA.SIDDIQUI", na=False, case=False)]
+        amra_raw_fccm = (amra_row.iloc[0].get('SEND RFI', 0) + amra_row.iloc[0].get('RECOMMEND CLOSE WITHOUT SAR', 0)) if not amra_row.empty else 0
 
-if data is not None:
-    current_month = data['Report_Month'].iloc[0]
-    st.markdown(f"<h1 style='text-align: center;'>🏆 Performance Excellence Board</h1>", unsafe_allow_html=True)
-    st.markdown(f"<h3 style='text-align: center; color: #FFD700;'>{current_month} Performance</h3>", unsafe_allow_html=True)
-    
-    tab_analyst, tab_tl, tab_explorer = st.tabs(["📊 Analyst Rankings", "👑 Team Lead Rankings", "🔍 Full Explorer"])
+        def apply_logic(row):
+            oid = str(row.get('OWNER ID', 'UNKNOWN')).upper()
+            a_vol = (row.get('SEND RFI', 0) + row.get('RECOMMEND CLOSE WITHOUT SAR', 0) + row.get('RECOMMEND CLOSE AND GENERATE SAR', 0))
+            tl_vol = (row.get('CLOSE WITHOUT SAR', 0) + row.get('REJECT RECOMMENDATION', 0) + row.get('LINK AND CLOSE AS MERGE', 0) + row.get('CLOSE AND GENERATE SAR', 0))
+            str_v, pri_str = row.get('STR', 0), row.get('PRI STR', 0)
+            
+            if ("IRFAN.HASAN" in oid and month <= 11) or ("REHAN.SYED" in oid and month == 12):
+                final_vol, role, target = (tl_vol - amra_raw_fccm) + (amra_raw_fccm * 0.2) + (str_v * 20) + (pri_str * 2), "Team Lead", 40
+            elif "AMRA.SIDDIQUI" in oid:
+                final_vol, role, target = (a_vol * 0.2) + (str_v * 0.33), "Analyst", 200
+            elif tl_vol > 0:
+                final_vol, role, target = tl_vol + (str_v * 20) + (pri_str * 2), "Team Lead", 40
+            else:
+                final_vol, role, target = a_vol + (str_v * 20) + (pri_str * 2), "Analyst", 40
 
-    with tab_analyst:
-        # Analyst = People with Maker Volume
-        top_5 = data[data['Maker_Vol'] > 0].nlargest(5, 'Total_Score').reset_index(drop=True)
+            system_score = round(((final_vol / target) * 70) + 30, 2)
+            rating_val = st.session_state.approved_ratings.get(oid, 3) 
+            revised_total = round((system_score * 0.7) + ((rating_val * 25) * 0.3), 2)
+            return pd.Series([final_vol, system_score, revised_total, role])
+
+        df[['Eff_Vol', 'System_Score', 'Final_Score', 'Role']] = df.apply(apply_logic, axis=1)
+        return df
+
+    def refresh_scores_inplace():
+        if st.session_state.mtd_data is not None:
+            def update_row(row):
+                oid = str(row['OWNER ID']).upper()
+                sys = row['System_Score']
+                rat = st.session_state.approved_ratings.get(oid, 3)
+                return round((sys * 0.7) + ((rat * 25) * 0.3), 2)
+            st.session_state.mtd_data['Final_Score'] = st.session_state.mtd_data.apply(update_row, axis=1)
+
+    # --- 6. RANKING RENDERER ---
+    def render_snapshot_rankings(df, score_col, title, is_pending=False):
+        st.subheader(title)
+        if is_pending:
+            st.info("⚠️ Ratings Pending / Approval Awaited")
+            st.markdown("<div style='text-align: center; color: #888;'><i>Rankings will appear here once ratings are approved.</i></div>", unsafe_allow_html=True)
+            return
+
+        top_5 = df.sort_values(score_col, ascending=False).head(5)
         
         if len(top_5) >= 3:
-            st.markdown(f"""
-            <div style="display: flex; justify-content: center; align-items: flex-end; gap: 30px; margin-top: 40px; margin-bottom: 40px;">
-                <div style="text-align: center;">
-                    <div style="font-size: 45px;">🥈</div>
-                    <div style="background: #e5e4e2; border-radius: 50%; width: 110px; height: 110px; display: flex; align-items: center; justify-content: center; margin: auto; color: black; font-weight: bold; font-size: 12px; border: 3px solid #c0c0c0;">{top_5.iloc[1]['OWNER ID']}</div>
-                    <p><b>Rank 2</b><br>{int(top_5.iloc[1]['Total_Score'])} Pts</p>
-                </div>
-                <div style="text-align: center;">
-                    <div style="font-size: 55px; margin-bottom: 5px;">🥇</div>
-                    <div style="background: #ffd700; border: 5px solid #b8860b; border-radius: 50%; width: 150px; height: 150px; display: flex; align-items: center; justify-content: center; margin: auto; color: black; font-weight: bold; box-shadow: 0px 10px 20px rgba(0,0,0,0.3); font-size: 14px;">{top_5.iloc[0]['OWNER ID']}</div>
-                    <p style="font-size: 18px;"><b>Winner</b><br>{int(top_5.iloc[0]['Total_Score'])} Pts</p>
-                </div>
-                <div style="text-align: center;">
-                    <div style="font-size: 45px;">🥉</div>
-                    <div style="background: #cd7f32; border-radius: 50%; width: 100px; height: 100px; display: flex; align-items: center; justify-content: center; margin: auto; color: black; font-weight: bold; font-size: 11px; border: 3px solid #8b4513;">{top_5.iloc[2]['OWNER ID']}</div>
-                    <p><b>Rank 3</b><br>{int(top_5.iloc[2]['Total_Score'])} Pts</p>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            p1, p2, p3 = st.columns([1, 1.2, 1])
+            with p2: st.markdown(f"<div style='text-align: center;'><div style='font-size: 30px;'>🥇</div><div style='background: #FFD700; border-radius: 50%; width: 100px; height: 100px; margin: auto; display: flex; align-items: center; justify-content: center; color: black; font-weight: bold; font-size: 12px;'>{top_5.iloc[0]['OWNER ID']}</div><p>Winner<br><b>{top_5.iloc[0][score_col]} Pts</b></p></div>", unsafe_allow_html=True)
+            with p1: st.markdown(f"<div style='text-align: center; margin-top: 20px;'><div style='font-size: 25px;'>🥈</div><div style='background: #C0C0C0; border-radius: 50%; width: 80px; height: 80px; margin: auto; display: flex; align-items: center; justify-content: center; color: black; font-weight: bold; font-size: 10px;'>{top_5.iloc[1]['OWNER ID']}</div><p>Rank 2<br>{top_5.iloc[1][score_col]} Pts</p></div>", unsafe_allow_html=True)
+            with p3: st.markdown(f"<div style='text-align: center; margin-top: 20px;'><div style='font-size: 25px;'>🥉</div><div style='background: #CD7F32; border-radius: 50%; width: 80px; height: 80px; margin: auto; display: flex; align-items: center; justify-content: center; color: black; font-weight: bold; font-size: 10px;'>{top_5.iloc[2]['OWNER ID']}</div><p>Rank 3<br>{top_5.iloc[2][score_col]} Pts</p></div>", unsafe_allow_html=True)
 
-        # Show Rank 4 and 5 if they exist
-        c4, c5 = st.columns(2)
+        r4, r5 = st.columns(2)
         if len(top_5) >= 4:
-            with c4:
-                st.markdown(f"""<div style="text-align: center; padding: 15px; border: 2px solid #555; border-radius: 15px; background-color: rgba(255,255,255,0.05);">
-                    <span style="font-size: 30px;">⭐</span><br><b>Rank 4</b><br><span style="font-size: 18px;">{top_5.iloc[3]['OWNER ID']}</span><br><span style="color: #4CAF50; font-weight: bold;">{int(top_5.iloc[3]['Total_Score'])} Pts</span>
-                </div>""", unsafe_allow_html=True)
+            with r4: st.markdown(f"<div class='rank-card'><div class='rank-star'>★</div><div class='rank-name'>Rank 4<br>{top_5.iloc[3]['OWNER ID']}</div><div class='rank-pts'>{top_5.iloc[3][score_col]} Pts</div></div>", unsafe_allow_html=True)
         if len(top_5) >= 5:
-            with c5:
-                st.markdown(f"""<div style="text-align: center; padding: 15px; border: 2px solid #555; border-radius: 15px; background-color: rgba(255,255,255,0.05);">
-                    <span style="font-size: 30px;">⭐</span><br><b>Rank 5</b><br><span style="font-size: 18px;">{top_5.iloc[4]['OWNER ID']}</span><br><span style="color: #4CAF50; font-weight: bold;">{int(top_5.iloc[4]['Total_Score'])} Pts</span>
-                </div>""", unsafe_allow_html=True)
+            with r5: st.markdown(f"<div class='rank-card'><div class='rank-star'>★</div><div class='rank-name'>Rank 5<br>{top_5.iloc[4]['OWNER ID']}</div><div class='rank-pts'>{top_5.iloc[4][score_col]} Pts</div></div>", unsafe_allow_html=True)
 
-    with tab_tl:
-        # Team Lead = People with Checker Volume
-        tl_data = data[data['Checker_Vol'] > 0].nlargest(5, 'Total_Score').reset_index(drop=True)
-        if not tl_data.empty:
-            st.markdown("<h4 style='text-align: center;'>👑 Top Performing Team Leads</h4>", unsafe_allow_html=True)
-            fig = px.bar(tl_data, x='OWNER ID', y='Total_Score', color='Total_Score', 
-                         color_continuous_scale='Viridis', text_auto=True)
-            fig.update_layout(showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(tl_data[['OWNER ID', 'Total_Score', 'Checker_Vol']], use_container_width=True, hide_index=True)
-        else:
-            st.info("No Team Lead data available for this month.")
+    # --- 7. TABS & LOGIC ---
+    tab_list = ["🏆 Analyst Excellence", "🎖️ TL Excellence", "📊 Scoreboard Explorer"]
+    if st.session_state.role in ["Team Lead", "Head AML"]: tab_list.append("⭐ Rating Panel")
+    if st.session_state.role in ["Admin", "Head AML", "Head AML/CFT"]: tab_list.append("⚙️ Management & Approvals")
+    tabs = st.tabs(tab_list)
 
-    with tab_explorer:
-        st.subheader("🕵️ Detailed Performance Explorer")
-        search = st.multiselect("Filter by Analyst Name:", options=sorted(data['OWNER ID'].unique()))
-        filtered = data[data['OWNER ID'].isin(search)] if search else data
-        st.dataframe(filtered[['OWNER ID', 'Maker_Vol', 'Checker_Vol', 'STR', 'PRI STR', 'Total_Score']].sort_values('Total_Score', ascending=False), 
-                     use_container_width=True, hide_index=True)
+    # --- ADMIN / MANAGEMENT TAB ---
+    if "⚙️ Management & Approvals" in tab_list:
+        with tabs[-1]: 
+            if st.session_state.role == "Admin":
+                st.subheader("Upload Monthly Data")
+                f1, f2 = st.file_uploader("FCCM MTD (.xls)", type=['xls']), st.file_uploader("STR MTD (.xlsx)", type=['xlsx'])
+                if st.button("Process Reports"):
+                    if f1 and f2: 
+                        st.session_state.mtd_data = calculate_performance(pd.read_excel(f1, skiprows=2, engine='xlrd'), pd.read_excel(f2), sel_month)
+                        st.session_state.submitted_ratings = set()
+                        st.session_state.pending_tl_ratings = []
+                        st.session_state.approved_ratings = {}
+                        st.success("Data Updated!")
+                        st.rerun()
+            
+            if st.session_state.role in ["Head AML", "Head AML/CFT"]:
+                st.subheader("Pending Approvals")
+                if not st.session_state.pending_tl_ratings:
+                    st.info("No pending approvals.")
+                for i, entry in enumerate(st.session_state.pending_tl_ratings):
+                    st.write(f"**Submission from {entry.get('TL', 'Unknown')}**")
+                    st.table(pd.DataFrame(entry['Grades'].items(), columns=['Analyst', 'Rating']))
+                    c1, c2 = st.columns(2)
+                    if c1.button("Approve", key=f"at_{i}"):
+                        st.session_state.approved_ratings.update(entry['Grades'])
+                        st.session_state.pending_tl_ratings.pop(i)
+                        refresh_scores_inplace()
+                        st.success("Approved!")
+                        st.rerun()
+                    if c2.button("Reject", key=f"rt_{i}"):
+                        tl_name = entry.get('TL')
+                        if tl_name in st.session_state.submitted_ratings:
+                            st.session_state.submitted_ratings.remove(tl_name)
+                        st.session_state.pending_tl_ratings.pop(i)
+                        st.rerun()
 
-else:
-    st.info("📢 The Dashboard is ready. Admin: Please login to publish the latest monthly report.")
+    # --- RATING PANEL TAB ---
+    if "⭐ Rating Panel" in tab_list and st.session_state.role == "Team Lead":
+        with tabs[3]: 
+            if st.session_state.user_name in st.session_state.submitted_ratings:
+                st.success("✅ Ratings submitted for approval.")
+            else:
+                st.subheader("Rate Your Team")
+                if st.session_state.mtd_data is not None:
+                    my_team = TEAM_STRUCTURE.get(st.session_state.user_name, [])
+                    team_data = st.session_state.mtd_data[st.session_state.mtd_data['OWNER ID'].isin(my_team)]
+                    if not team_data.empty:
+                        with st.form("rating_form"):
+                            grades = {row['OWNER ID']: st.slider(f"Rating for {row['OWNER ID']}", 1, 5, 3, key=f"rate_{row['OWNER ID']}") for _, row in team_data.iterrows()}
+                            if st.form_submit_button("Submit Ratings"):
+                                st.session_state.pending_tl_ratings.append({"TL": st.session_state.user_name, "Grades": grades})
+                                st.session_state.submitted_ratings.add(st.session_state.user_name)
+                                st.success("Submitted!")
+                                st.rerun()
+
+    # --- EXCELLENCE VIEWS ---
+    if st.session_state.mtd_data is not None:
+        ratings_pending = len(st.session_state.approved_ratings) == 0
+        right_col_title = "⏳ Ratings & Approval Awaited" if ratings_pending else "Revised Score"
+
+        with tabs[0]: 
+            df_a = st.session_state.mtd_data[st.session_state.mtd_data['Role'] == "Analyst"]
+            cl, cm, cr = st.columns([10, 1, 10]) 
+            with cl: render_snapshot_rankings(df_a, 'System_Score', "System Productivity Only")
+            with cm: st.markdown("<div class='vertical-line'></div>", unsafe_allow_html=True)
+            with cr: render_snapshot_rankings(df_a, 'Final_Score', right_col_title, is_pending=ratings_pending)
+        
+        with tabs[1]: 
+            df_t = st.session_state.mtd_data[st.session_state.mtd_data['Role'] == "Team Lead"]
+            cl, cm, cr = st.columns([10, 1, 10])
+            with cl: render_snapshot_rankings(df_t, 'System_Score', "System Productivity Only")
+            with cm: st.markdown("<div class='vertical-line'></div>", unsafe_allow_html=True)
+            with cr: render_snapshot_rankings(df_t, 'Final_Score', right_col_title, is_pending=ratings_pending)
+        
+        with tabs[2]: st.dataframe(st.session_state.mtd_data, use_container_width=True)
