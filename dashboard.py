@@ -7,8 +7,8 @@ if 'role' not in st.session_state: st.session_state.role = None
 if 'user_name' not in st.session_state: st.session_state.user_name = None
 if 'mtd_data' not in st.session_state: st.session_state.mtd_data = None
 if 'submitted_ratings' not in st.session_state: st.session_state.submitted_ratings = set()
-if 'pending_analyst_ratings' not in st.session_state: st.session_state.pending_analyst_ratings = []
 if 'pending_tl_ratings' not in st.session_state: st.session_state.pending_tl_ratings = []
+if 'pending_head_aml_ratings' not in st.session_state: st.session_state.pending_head_aml_ratings = []
 if 'approved_ratings' not in st.session_state: st.session_state.approved_ratings = {}
 
 st.set_page_config(layout="wide", page_title="AML Performance Board")
@@ -35,7 +35,7 @@ TEAM_STRUCTURE = {
 
 # --- PASSWORDS (ADMIN HIDDEN IN SECRETS) ---
 PASSWORDS = {
-    "Admin": st.secrets.get("ADMIN_PASSWORD", "LocalDevPass123"), # Pulls from public Streamlit Secrets
+    "Admin": st.secrets.get("ADMIN_PASSWORD", "admin_access_123"),
     "Head AML/CFT": "CFT@Head2025",
     "Head AML": "HeadAML!123", 
     "Team Lead": "TL@AML2025", 
@@ -151,49 +151,76 @@ else:
                         st.session_state.mtd_data = calculate_performance(pd.read_excel(f1, skiprows=2, engine='xlrd'), pd.read_excel(f2), sel_month)
                         st.session_state.submitted_ratings = set()
                         st.session_state.pending_tl_ratings = []
+                        st.session_state.pending_head_aml_ratings = []
                         st.session_state.approved_ratings = {}
                         st.success("Data Updated!")
                         st.rerun()
             
-            if st.session_state.role in ["Head AML", "Head AML/CFT"]:
-                st.subheader("Pending Approvals")
+            # HEAD AML Approves Analyst Ratings from Team Leads
+            if st.session_state.role == "Head AML":
+                st.subheader("Pending Analyst Approvals (from Team Leads)")
                 if not st.session_state.pending_tl_ratings:
-                    st.info("No pending approvals.")
+                    st.info("No pending analyst approvals.")
                 for i, entry in enumerate(st.session_state.pending_tl_ratings):
-                    st.write(f"**Submission from {entry.get('TL', 'Unknown')}**")
+                    st.write(f"**From TL: {entry.get('TL')}**")
                     st.table(pd.DataFrame(entry['Grades'].items(), columns=['Analyst', 'Rating']))
                     c1, c2 = st.columns(2)
-                    if c1.button("Approve", key=f"at_{i}"):
+                    if c1.button("Approve Analyst Ratings", key=f"aa_{i}"):
                         st.session_state.approved_ratings.update(entry['Grades'])
                         st.session_state.pending_tl_ratings.pop(i)
                         refresh_scores_inplace()
-                        st.success("Approved!")
                         st.rerun()
-                    if c2.button("Reject", key=f"rt_{i}"):
-                        tl_name = entry.get('TL')
-                        if tl_name in st.session_state.submitted_ratings:
-                            st.session_state.submitted_ratings.remove(tl_name)
+                    if c2.button("Reject Analyst Ratings", key=f"ra_{i}"):
+                        if entry.get('TL') in st.session_state.submitted_ratings: st.session_state.submitted_ratings.remove(entry.get('TL'))
                         st.session_state.pending_tl_ratings.pop(i)
                         st.rerun()
 
+            # HEAD AML/CFT Approves TL Ratings from Head AML
+            if st.session_state.role == "Head AML/CFT":
+                st.subheader("Pending Team Lead Approvals (from Head AML)")
+                if not st.session_state.pending_head_aml_ratings:
+                    st.info("No pending TL approvals.")
+                for i, entry in enumerate(st.session_state.pending_head_aml_ratings):
+                    st.table(pd.DataFrame(entry['Grades'].items(), columns=['Team Lead', 'Rating']))
+                    c1, c2 = st.columns(2)
+                    if c1.button("Approve TL Ratings", key=f"at_{i}"):
+                        st.session_state.approved_ratings.update(entry['Grades'])
+                        st.session_state.pending_head_aml_ratings.pop(i)
+                        refresh_scores_inplace()
+                        st.rerun()
+                    if c2.button("Reject TL Ratings", key=f"rt_{i}"):
+                        st.session_state.pending_head_aml_ratings.pop(i)
+                        st.rerun()
+
     # --- RATING PANEL TAB ---
-    if "⭐ Rating Panel" in tab_list and st.session_state.role == "Team Lead":
+    if "⭐ Rating Panel" in tab_list:
         with tabs[3]: 
-            if st.session_state.user_name in st.session_state.submitted_ratings:
-                st.success("✅ Ratings submitted for approval.")
-            else:
-                st.subheader("Rate Your Team")
-                if st.session_state.mtd_data is not None:
-                    my_team = TEAM_STRUCTURE.get(st.session_state.user_name, [])
-                    team_data = st.session_state.mtd_data[st.session_state.mtd_data['OWNER ID'].isin(my_team)]
-                    if not team_data.empty:
-                        with st.form("rating_form"):
-                            grades = {row['OWNER ID']: st.slider(f"Rating for {row['OWNER ID']}", 1, 5, 3, key=f"rate_{row['OWNER ID']}") for _, row in team_data.iterrows()}
-                            if st.form_submit_button("Submit Ratings"):
+            # Team Lead rates Analysts
+            if st.session_state.role == "Team Lead":
+                if st.session_state.user_name in st.session_state.submitted_ratings:
+                    st.success("✅ Ratings submitted for Head AML approval.")
+                else:
+                    st.subheader("Rate Your Team (Analysts)")
+                    if st.session_state.mtd_data is not None:
+                        my_team = TEAM_STRUCTURE.get(st.session_state.user_name, [])
+                        with st.form("tl_form"):
+                            grades = {oid: st.slider(f"Rating for {oid}", 1, 5, 3) for oid in my_team}
+                            if st.form_submit_button("Submit Analyst Ratings"):
                                 st.session_state.pending_tl_ratings.append({"TL": st.session_state.user_name, "Grades": grades})
                                 st.session_state.submitted_ratings.add(st.session_state.user_name)
-                                st.success("Submitted!")
                                 st.rerun()
+
+            # Head AML rates Team Leads
+            if st.session_state.role == "Head AML":
+                st.subheader("Rate Team Leads")
+                if st.session_state.mtd_data is not None:
+                    tl_list = list(TEAM_STRUCTURE.keys())
+                    with st.form("head_form"):
+                        grades = {tl: st.slider(f"Rating for {tl}", 1, 5, 3) for tl in tl_list}
+                        if st.form_submit_button("Submit TL Ratings to Head AML/CFT"):
+                            st.session_state.pending_head_aml_ratings.append({"Grades": grades})
+                            st.success("TL Ratings sent for final approval!")
+                            st.rerun()
 
     # --- EXCELLENCE VIEWS ---
     if st.session_state.mtd_data is not None:
